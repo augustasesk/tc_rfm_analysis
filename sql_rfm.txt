@@ -1,0 +1,177 @@
+WITH Frequency AS (
+  SELECT
+    CustomerID,
+    COUNT(DISTINCT InvoiceNo) AS Frequency
+  FROM `tc-da-1.turing_data_analytics.rfm`
+  WHERE 
+    (InvoiceDate BETWEEN '2010-12-01' AND '2011-12-01')
+    AND CustomerID IS NOT NULL
+  GROUP BY CustomerID
+), -- Retrieves Frequency value per customer
+
+Monetary AS (
+  SELECT
+    CustomerID,
+    ROUND(SUM(TotalDue), 2) AS Monetary
+  FROM (
+    SELECT
+      CustomerID,
+      Quantity * UnitPrice AS TotalDue
+    FROM `tc-da-1.turing_data_analytics.rfm`
+    WHERE 
+      (InvoiceDate BETWEEN '2010-12-01' AND '2011-12-01')
+      AND CustomerID IS NOT NULL
+  )
+  GROUP BY CustomerID
+), -- Retrieves Monetary value per customer
+
+Recency AS (
+  SELECT
+    CustomerID,
+    DATE_DIFF('2011-12-01', LatestInvoiceDate, DAY) AS Recency
+  FROM (
+    SELECT
+      CustomerID,
+      CAST(MAX(InvoiceDate) AS DATE) AS LatestInvoiceDate
+    FROM `tc-da-1.turing_data_analytics.rfm`
+    WHERE 
+      (InvoiceDate BETWEEN '2010-12-01' AND '2011-12-01')
+      AND CustomerID IS NOT NULL
+    GROUP BY CustomerID
+  )
+), -- Retrieves amount of days from last purchase to 2011-12-01
+
+Quartiles AS (
+  SELECT
+    (SELECT APPROX_QUANTILES(Frequency.Frequency, 4)[OFFSET(1)] FROM Frequency) AS FrequencyQ1,
+    (SELECT APPROX_QUANTILES(Frequency.Frequency, 4)[OFFSET(2)] FROM Frequency) AS FrequencyQ2,
+    (SELECT APPROX_QUANTILES(Frequency.Frequency, 4)[OFFSET(3)] FROM Frequency) AS FrequencyQ3,
+    (SELECT APPROX_QUANTILES(Monetary.Monetary, 4)[OFFSET(1)] FROM Monetary) AS MonetaryQ1,
+    (SELECT APPROX_QUANTILES(Monetary.Monetary, 4)[OFFSET(2)] FROM Monetary) AS MonetaryQ2,
+    (SELECT APPROX_QUANTILES(Monetary.Monetary, 4)[OFFSET(3)] FROM Monetary) AS MonetaryQ3,
+    (SELECT APPROX_QUANTILES(Recency.Recency, 4)[OFFSET(1)] FROM Recency) AS RecencyQ1,
+    (SELECT APPROX_QUANTILES(Recency.Recency, 4)[OFFSET(2)] FROM Recency) AS RecencyQ2,
+    (SELECT APPROX_QUANTILES(Recency.Recency, 4)[OFFSET(3)] FROM Recency) AS RecencyQ3
+), -- Defines 25%, 50%, and 75% quartiles for each dimension
+
+Scores AS (
+  SELECT
+  Monetary.CustomerID,
+    CASE
+      WHEN Frequency.Frequency <= (SELECT FrequencyQ1 FROM Quartiles) THEN 1
+      WHEN Frequency.Frequency <= (SELECT FrequencyQ2 FROM Quartiles) THEN 2
+      WHEN Frequency.Frequency <= (SELECT FrequencyQ3 FROM Quartiles) THEN 3
+      ELSE 4
+    END AS FrequencyScore,
+    CASE
+      WHEN Monetary.Monetary <= (SELECT MonetaryQ1 FROM Quartiles) THEN 1
+      WHEN Monetary.Monetary <= (SELECT MonetaryQ2 FROM Quartiles) THEN 2
+      WHEN Monetary.Monetary <= (SELECT MonetaryQ3 FROM Quartiles) THEN 3
+      ELSE 4
+    END AS MonetaryScore,
+    CASE
+      WHEN Recency.Recency <= (SELECT RecencyQ1 FROM Quartiles) THEN 4
+      WHEN Recency.Recency <= (SELECT RecencyQ2 FROM Quartiles) THEN 3
+      WHEN Recency.Recency <= (SELECT RecencyQ3 FROM Quartiles) THEN 2
+      ELSE 1
+    END AS RecencyScore
+FROM Monetary
+LEFT JOIN Frequency
+  USING (CustomerID)
+LEFT JOIN Recency
+  USING (CustomerID)
+) -- Defines scores for each dimension per customer
+    
+SELECT
+  *,
+  CASE
+    WHEN (R_Score = 4) AND (F_Score = 4) AND (M_Score = 4) THEN 'Best Customers'
+
+    WHEN (R_Score = 4) AND (F_Score = 4) AND (M_Score = 3) THEN 'Loyal Customers'
+    WHEN (R_Score = 4) AND (F_Score = 4) AND (M_Score = 2) THEN 'Loyal Customers'
+    WHEN (R_Score = 4) AND (F_Score = 4) AND (M_Score = 1) THEN 'Loyal Customers'
+    WHEN (R_Score = 3) AND (F_Score = 4) AND (M_Score = 4) THEN 'Loyal Customers'
+    WHEN (R_Score = 3) AND (F_Score = 4) AND (M_Score = 3) THEN 'Loyal Customers'
+    WHEN (R_Score = 3) AND (F_Score = 4) AND (M_Score = 2) THEN 'Loyal Customers'
+    WHEN (R_Score = 3) AND (F_Score = 4) AND (M_Score = 1) THEN 'Loyal Customers'
+
+    WHEN (R_Score = 4) AND (F_Score = 3) AND (M_Score = 4) THEN 'Potential Loyalists'
+    WHEN (R_Score = 4) AND (F_Score = 3) AND (M_Score BETWEEN 2 AND 3) THEN 'Potential Loyalists'
+    WHEN (R_Score = 4) AND (F_Score = 3) AND (M_Score = 1) THEN 'Potential Loyalists'
+    WHEN (R_Score = 4) AND (F_Score = 2) AND (M_Score = 4) THEN 'Potential Loyalists'
+    WHEN (R_Score = 4) AND (F_Score = 2) AND (M_Score BETWEEN 2 AND 3) THEN 'Potential Loyalists'
+    WHEN (R_Score = 4) AND (F_Score = 2) AND (M_Score = 1) THEN 'Potential Loyalists'
+
+    WHEN (R_Score = 4) AND (F_Score = 1) AND (M_Score = 4) THEN 'Recent Customers'
+    WHEN (R_Score = 4) AND (F_Score = 1) AND (M_Score = 3) THEN 'Recent Customers'
+    WHEN (R_Score = 4) AND (F_Score = 1) AND (M_Score BETWEEN 1 AND 2) THEN 'Recent Customers'
+
+    WHEN (R_Score = 3) AND (F_Score BETWEEN 2 AND 3) AND (M_Score BETWEEN 1 AND 2) THEN 'Promising Customers'
+    WHEN (R_Score = 3) AND (F_Score = 2) AND (M_Score = 4) THEN 'Promising Customers'
+    WHEN (R_Score = 3) AND (F_Score = 2) AND (M_Score = 3) THEN 'Promising Customers'
+    WHEN (R_Score = 3) AND (F_Score = 2) AND (M_Score = 2) THEN 'Promising Customers'
+    WHEN (R_Score = 3) AND (F_Score = 2) AND (M_Score = 1) THEN 'Promising Customers'
+    WHEN (R_Score = 3) AND (F_Score = 1) AND (M_Score = 4) THEN 'Promising Customers'
+    WHEN (R_Score = 3) AND (F_Score = 1) AND (M_Score = 3) THEN 'Promising Customers'
+    WHEN (R_Score = 3) AND (F_Score = 1) AND (M_Score = 2) THEN 'Promising Customers'
+    WHEN (R_Score = 3) AND (F_Score = 1) AND (M_Score = 1) THEN 'Promising Customers'
+
+    WHEN (R_Score = 3) AND (F_Score = 3) AND (M_Score = 4) THEN 'Customers Needing Attention'
+    WHEN (R_Score = 3) AND (F_Score = 3) AND (M_Score = 1) THEN 'Customers Needing Attention'
+    WHEN (R_Score BETWEEN 2 AND 3) AND (F_Score = 3) AND (M_Score BETWEEN 2 AND 3) THEN 'Customers Needing Attention'
+    WHEN (R_Score = 2) AND (F_Score = 4) AND (M_Score = 4) THEN 'Customers Needing Attention'
+    WHEN (R_Score = 2) AND (F_Score = 4) AND (M_Score = 3) THEN 'Customers Needing Attention'
+    WHEN (R_Score = 2) AND (F_Score = 4) AND (M_Score = 2) THEN 'Customers Needing Attention'
+    WHEN (R_Score = 2) AND (F_Score = 4) AND (M_Score = 1) THEN 'Customers Needing Attention'
+
+    WHEN (R_Score = 2) AND (F_Score = 3) AND (M_Score = 4) THEN 'Customers Needing Attention'
+    WHEN (R_Score = 2) AND (F_Score = 3) AND (M_Score = 1) THEN 'Customers Needing Attention'
+
+    WHEN (R_Score = 2) AND (F_Score BETWEEN 2 AND 3) AND (M_Score BETWEEN 1 AND 2) THEN 'About to Sleep'
+    WHEN (R_Score = 2) AND (F_Score = 2) AND (M_Score = 4) THEN 'About to Sleep'
+    WHEN (R_Score = 2) AND (F_Score = 2) AND (M_Score = 3) THEN 'About to Sleep'
+    WHEN (R_Score = 2) AND (F_Score = 2) AND (M_Score = 2) THEN 'About to Sleep'
+    WHEN (R_Score = 2) AND (F_Score = 2) AND (M_Score = 1) THEN 'About to Sleep'
+
+    WHEN (R_Score = 2) AND (F_Score = 1) AND (M_Score = 4) THEN 'About to Sleep'
+    WHEN (R_Score = 2) AND (F_Score = 1) AND (M_Score = 3) THEN 'About to Sleep'
+    WHEN (R_Score = 2) AND (F_Score = 1) AND (M_Score = 2) THEN 'About to Sleep'
+    WHEN (R_Score = 2) AND (F_Score = 1) AND (M_Score = 1) THEN 'About to Sleep'
+
+    WHEN (R_Score = 1) AND (F_Score = 4) AND (M_Score = 3) THEN "At Risk"
+    WHEN (R_Score = 1) AND (F_Score = 4) AND (M_Score = 2) THEN "At Risk"
+    WHEN (R_Score = 1) AND (F_Score = 4) AND (M_Score = 1) THEN "At Risk"
+    WHEN (R_Score = 1) AND (F_Score BETWEEN 3 AND 4) AND (M_Score BETWEEN 3 AND 4) THEN 'At Risk'
+    WHEN (R_Score = 1) AND (F_Score = 3) AND (M_Score = 4) THEN "At Risk"
+    WHEN (R_Score = 1) AND (F_Score = 3) AND (M_Score = 3) THEN "At Risk"
+    WHEN (R_Score = 1) AND (F_Score = 3) AND (M_Score = 2) THEN "At Risk"
+    WHEN (R_Score = 1) AND (F_Score = 3) AND (M_Score = 1) THEN "At Risk"
+
+    WHEN (R_Score = 1) AND (F_Score = 4) AND (M_Score = 4) THEN "Can't Lose Them"
+
+    WHEN (R_Score BETWEEN 1 AND 2) AND (F_Score BETWEEN 1 AND 2) AND (M_Score = 2) THEN "Hybernating"
+    WHEN (R_Score = 1) AND (F_Score = 2) AND (M_Score = 4) THEN "Hybernating"
+    WHEN (R_Score = 1) AND (F_Score = 2) AND (M_Score = 3) THEN "Hybernating"
+    WHEN (R_Score = 1) AND (F_Score = 2) AND (M_Score = 1) THEN "Hybernating"
+    WHEN (R_Score = 1) AND (F_Score = 1) AND (M_Score BETWEEN 3 AND 4) THEN "Hybernating"
+
+    WHEN (R_Score = 1) AND (F_Score = 1) AND (M_Score = 1) THEN "Lost Customers"
+  END AS Customer_Segment
+FROM (
+  SELECT
+    Monetary.CustomerID,
+    Monetary.Monetary,
+    Frequency.Frequency,
+    Recency.Recency,
+    Scores.MonetaryScore AS M_Score,
+    Scores.FrequencyScore AS F_Score,
+    Scores.RecencyScore AS R_Score,
+    ROUND((Scores.MonetaryScore + Scores.FrequencyScore + Scores.RecencyScore) / 3, 1) AS RFM_Score -- Calculates common RFM score, provided that each value has an equal weight
+  FROM Monetary
+  LEFT JOIN Frequency
+    USING (CustomerID)
+  LEFT JOIN Recency
+    USING (CustomerID)
+  LEFT JOIN Scores
+    USING (CustomerID)
+  );
